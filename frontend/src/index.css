@@ -1,0 +1,90 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg-primary: #0a0a0f;
+  --bg-secondary: #12121a;
+  --bg-tertiary: #1a1a24;
+  --border-color: #2a2a3a;
+  --text-primary: #e4e4e7;
+  --text-secondary: #a1a1aa;
+  --accent: #8B5CF6;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: 'JetBrains Mono', monospace;
+}
+
+/* React Flow customizations */
+.react-flow__node {
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.react-flow__edge-path {
+  stroke: var(--border-color);
+  stroke-width: 2;
+}
+
+.react-flow__edge.selected .react-flow__edge-path,
+.react-flow__edge:hover .react-flow__edge-path {
+  stroke: var(--accent);
+}
+
+.react-flow__handle {
+  width: 12px;
+  height: 12px;
+  background-color: var(--bg-tertiary);
+  border: 2px solid var(--border-color);
+}
+
+.react-flow__handle:hover {
+  background-color: var(--accent);
+}
+
+.react-flow__background {
+  background-color: var(--bg-primary);
+}
+
+.react-flow__controls {
+  background-color: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+}
+
+.react-flow__controls-button {
+  background-color: var(--bg-tertiary);
+  border-color: var(--border-color);
+  fill: var(--text-secondary);
+}
+
+.react-flow__controls-button:hover {
+  background-color: var(--accent);
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--bg-secondary);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-color);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--accent);
+}
+
