@@ -2,12 +2,16 @@ import os
 import asyncio
 from typing import Any, Optional
 from contextlib import asynccontextmanager
+from dotenv import load_dotenv
 
-from fastapi import FastAPI, HTTPException, UploadFile, File, BackgroundTasks
+load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
+
+from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 import aiofiles
+import pandas as pd
 
 from engine import get_engine, WorkflowStatus, BlockStatus
 from blocks import BlockType
@@ -33,10 +37,10 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS middleware for frontend
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, specify exact origins
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -158,7 +162,6 @@ async def get_block_types():
 @app.post("/workflows/execute", response_model=WorkflowCreateResponse)
 async def execute_workflow(
     request: WorkflowRequest,
-    background_tasks: BackgroundTasks,
 ):
     """
     Start executing a workflow.
@@ -176,11 +179,9 @@ async def execute_workflow(
     # Create workflow
     workflow_id = engine.create_workflow(blocks)
 
-    # Start execution in background
-    async def run_workflow():
-        await engine.execute_workflow(workflow_id, blocks)
-
-    background_tasks.add_task(asyncio.create_task, run_workflow())
+    # Start execution in background using asyncio.create_task
+    # This schedules the coroutine to run in the current event loop
+    asyncio.create_task(engine.execute_workflow(workflow_id, blocks))
 
     return WorkflowCreateResponse(
         workflow_id=workflow_id,
@@ -237,10 +238,13 @@ async def get_workflow_results(workflow_id: str):
     if df is None:
         raise HTTPException(status_code=404, detail="Results not found")
 
+    # Replace NaN with None for JSON serialization
+    clean_df = df.where(pd.notna(df), None)
+
     return {
         "columns": list(df.columns),
         "row_count": len(df),
-        "data": df.to_dict(orient="records"),
+        "data": clean_df.to_dict(orient="records"),
     }
 
 
@@ -313,8 +317,6 @@ async def download_file(filename: str):
 @app.get("/files/{filename}/preview")
 async def preview_file(filename: str, rows: int = 10):
     """Preview a CSV file."""
-    import pandas as pd
-
     # Check data directory first
     file_path = os.path.join(DATA_DIR, filename)
 

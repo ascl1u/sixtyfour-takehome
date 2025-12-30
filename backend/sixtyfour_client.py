@@ -1,9 +1,11 @@
 import os
 import asyncio
+import logging
 from typing import Any, Optional
 import httpx
 from dataclasses import dataclass
 
+logger = logging.getLogger(__name__)
 
 SIXTYFOUR_BASE_URL = "https://api.sixtyfour.ai"
 DEFAULT_TIMEOUT = 900  # 15 minutes for sync calls
@@ -37,14 +39,14 @@ class SixtyfourClient:
     async def enrich_lead_async(
         self,
         lead_info: dict[str, Any],
-        struct: Optional[list[dict[str, str]]] = None,
+        struct: Optional[dict[str, str]] = None,
     ) -> str:
         """
         Submit an async lead enrichment job.
 
         Args:
             lead_info: Information about the lead (name, company, linkedin, etc.)
-            struct: List of fields to enrich with descriptions
+            struct: Dictionary of fields to enrich {field_name: description}
 
         Returns:
             task_id for polling status
@@ -99,7 +101,6 @@ class SixtyfourClient:
         elapsed = 0
         while elapsed < max_wait:
             status = await self.get_job_status(task_id)
-
             job_status = status.get("status", "").lower()
 
             if job_status in ("completed", "complete", "done", "success"):
@@ -108,6 +109,7 @@ class SixtyfourClient:
                     data=status.get("result", status.get("data", status)),
                 )
             elif job_status in ("failed", "error"):
+                logger.warning(f"Job {task_id} failed: {status.get('error')}")
                 return EnrichmentResult(
                     success=False,
                     error=status.get("error", "Job failed"),
@@ -116,6 +118,7 @@ class SixtyfourClient:
             await asyncio.sleep(poll_interval)
             elapsed += poll_interval
 
+        logger.warning(f"Job {task_id} timed out after {max_wait} seconds")
         return EnrichmentResult(
             success=False,
             error=f"Job timed out after {max_wait} seconds",
@@ -124,14 +127,14 @@ class SixtyfourClient:
     async def enrich_lead(
         self,
         lead_info: dict[str, Any],
-        struct: Optional[list[dict[str, str]]] = None,
+        struct: Optional[dict[str, str]] = None,
     ) -> EnrichmentResult:
         """
         Enrich a lead (sync version - submits async and waits).
 
         Args:
             lead_info: Information about the lead
-            struct: Fields to enrich
+            struct: Dictionary of fields to enrich {field_name: description}
 
         Returns:
             EnrichmentResult with enriched data

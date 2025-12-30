@@ -175,7 +175,9 @@ class WorkflowEngine:
                 if current_df is not None:
                     state.result_columns = list(current_df.columns)
                     state.result_row_count = len(current_df)
-                    state.result_preview = current_df.head(10).to_dict(orient="records")
+                    # Replace NaN with None for JSON serialization
+                    preview_df = current_df.head(10).copy()
+                    state.result_preview = preview_df.where(pd.notna(preview_df), None).to_dict(orient="records")
 
             # Workflow completed successfully
             state.status = WorkflowStatus.COMPLETED

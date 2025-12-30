@@ -33,7 +33,18 @@ class EnrichLeadBlock(Block):
 
         client = get_client()
 
-        struct = config.get("struct", [])
+        # Convert struct from array format to dict format for API
+        # Frontend sends: [{"name": "education", "description": "..."}]
+        # API expects: {"education": "..."}
+        struct_config = config.get("struct", [])
+        struct: dict[str, str] = {}
+        if isinstance(struct_config, list):
+            for item in struct_config:
+                if isinstance(item, dict) and "name" in item:
+                    struct[item["name"]] = item.get("description", "")
+        elif isinstance(struct_config, dict):
+            struct = struct_config
+
         name_col = config.get("name_column", "name")
         company_col = config.get("company_column", "company")
         linkedin_col = config.get("linkedin_column", "linkedin")
@@ -64,7 +75,7 @@ class EnrichLeadBlock(Block):
                 if "company_location" in row and pd.notna(row["company_location"]):
                     lead_info["location"] = str(row["company_location"])
 
-                result = await client.enrich_lead(lead_info, struct if struct else None)
+                result = await client.enrich_lead(lead_info, struct if len(struct) > 0 else None)
 
                 completed += 1
                 if on_progress:
