@@ -9,6 +9,7 @@ import pandas as pd
 from blocks import (
     Block,
     BlockType,
+    PauseException,
     ReadCSVBlock,
     SaveCSVBlock,
     FilterBlock,
@@ -20,6 +21,7 @@ from blocks import (
 class WorkflowStatus(str, Enum):
     PENDING = "pending"
     RUNNING = "running"
+    PAUSED = "paused"
     COMPLETED = "completed"
     FAILED = "failed"
 
@@ -27,6 +29,7 @@ class WorkflowStatus(str, Enum):
 class BlockStatus(str, Enum):
     PENDING = "pending"
     RUNNING = "running"
+    PAUSED = "paused"
     COMPLETED = "completed"
     FAILED = "failed"
     SKIPPED = "skipped"
@@ -59,6 +62,10 @@ class WorkflowState:
     result_preview: Optional[list[dict]] = None
     result_columns: Optional[list[str]] = None
     result_row_count: int = 0
+    # Pause/resume control fields
+    pause_requested: bool = False
+    last_processed_row: int = 0  # Row index to resume from
+    blocks_config: Optional[list[dict]] = None  # Store blocks config for resume
 
 
 # Block type to class mapping
@@ -120,6 +127,8 @@ class WorkflowEngine:
         self,
         workflow_id: str,
         blocks: list[dict[str, Any]],
+        start_block_index: int = 0,
+        start_row: int = 0,
     ) -> WorkflowState:
         """
         Execute a workflow.
@@ -127,6 +136,8 @@ class WorkflowEngine:
         Args:
             workflow_id: The workflow ID
             blocks: List of block definitions with 'id', 'type', and 'config'
+            start_block_index: Block index to start from (for resume)
+            start_row: Row index to start from within the block (for resume)
 
         Returns:
             Final WorkflowState
@@ -136,13 +147,25 @@ class WorkflowEngine:
             raise ValueError(f"Workflow {workflow_id} not found")
 
         state.status = WorkflowStatus.RUNNING
-        state.started_at = datetime.utcnow()
+        state.pause_requested = False  # Reset pause flag
+        state.blocks_config = blocks  # Store for potential resume
+        
+        if state.started_at is None:
+            state.started_at = datetime.utcnow()
 
-        current_df: Optional[pd.DataFrame] = None
+        # Get current DataFrame if resuming
+        current_df: Optional[pd.DataFrame] = self._dataframes.get(workflow_id)
+
+        # Create pause check callback
+        def pause_check() -> bool:
+            return state.pause_requested
 
         try:
             for i, block_def in enumerate(blocks):
-                block_id = block_def.get("id", str(uuid.uuid4()))
+                # Skip completed blocks when resuming
+                if i < start_block_index:
+                    continue
+                    
                 block_type = BlockType(block_def["type"])
                 config = block_def.get("config", {})
 
@@ -150,7 +173,8 @@ class WorkflowEngine:
                 state.current_block_index = i
                 block_progress = state.blocks[i]
                 block_progress.status = BlockStatus.RUNNING
-                block_progress.started_at = datetime.utcnow()
+                if block_progress.started_at is None:
+                    block_progress.started_at = datetime.utcnow()
 
                 # Create progress callback
                 async def on_progress(progress: int):
@@ -163,29 +187,56 @@ class WorkflowEngine:
 
                 block = block_class()
 
-                # Execute block
-                current_df = await block.execute(current_df, config, on_progress)
+                # Determine start row for this block
+                block_start_row = start_row if i == start_block_index else 0
+
+                # Execute block with pause support
+                current_df = await block.execute(
+                    current_df, 
+                    config, 
+                    on_progress,
+                    pause_check,
+                    block_start_row,
+                )
 
                 # Update block status
                 block_progress.status = BlockStatus.COMPLETED
                 block_progress.progress = 100
                 block_progress.completed_at = datetime.utcnow()
 
-                # Store intermediate result preview
+                # Store intermediate result
                 if current_df is not None:
+                    self._dataframes[workflow_id] = current_df
                     state.result_columns = list(current_df.columns)
                     state.result_row_count = len(current_df)
-                    # Replace NaN with None for JSON serialization
                     preview_df = current_df.head(10).copy()
                     state.result_preview = preview_df.where(pd.notna(preview_df), None).to_dict(orient="records")
+                    
+                # Reset start_row for subsequent blocks
+                start_row = 0
 
             # Workflow completed successfully
             state.status = WorkflowStatus.COMPLETED
             state.completed_at = datetime.utcnow()
 
-            # Store final DataFrame
-            if current_df is not None:
-                self._dataframes[workflow_id] = current_df
+        except PauseException as pe:
+            # Handle pause - save state for resume
+            print(f"[Engine] WORKFLOW PAUSED at block {state.current_block_index}, row {pe.last_processed_row}")
+            print(f"[Engine] Partial results: {pe.partial_df is not None and len(pe.partial_df) or 0} rows available")
+            state.status = WorkflowStatus.PAUSED
+            state.last_processed_row = pe.last_processed_row
+            
+            # Store partial DataFrame
+            if pe.partial_df is not None:
+                self._dataframes[workflow_id] = pe.partial_df
+                state.result_columns = list(pe.partial_df.columns)
+                state.result_row_count = len(pe.partial_df)
+                preview_df = pe.partial_df.head(10).copy()
+                state.result_preview = preview_df.where(pd.notna(preview_df), None).to_dict(orient="records")
+
+            # Mark current block as paused
+            if state.current_block_index < len(state.blocks):
+                state.blocks[state.current_block_index].status = BlockStatus.PAUSED
 
         except Exception as e:
             state.status = WorkflowStatus.FAILED
@@ -198,11 +249,60 @@ class WorkflowEngine:
                 state.blocks[state.current_block_index].error = str(e)
 
         return state
+    
+    async def resume_workflow(self, workflow_id: str) -> Optional[WorkflowState]:
+        """
+        Resume a paused workflow from where it stopped.
+        
+        Returns:
+            The WorkflowState after resuming, or None if workflow not found or not paused.
+        """
+        state = self.workflows.get(workflow_id)
+        if not state:
+            return None
+        
+        if state.status != WorkflowStatus.PAUSED:
+            return None
+        
+        if not state.blocks_config:
+            return None
+        
+        # Resume from the paused block and row
+        print(f"[Engine] RESUMING workflow {workflow_id} from block {state.current_block_index}, row {state.last_processed_row}")
+        return await self.execute_workflow(
+            workflow_id,
+            state.blocks_config,
+            start_block_index=state.current_block_index,
+            start_row=state.last_processed_row,
+        )
 
     def cleanup_workflow(self, workflow_id: str) -> None:
         """Remove a workflow and its data from memory."""
         self.workflows.pop(workflow_id, None)
         self._dataframes.pop(workflow_id, None)
+
+    def request_pause(self, workflow_id: str) -> bool:
+        """
+        Request to pause a running workflow.
+        
+        Returns:
+            True if pause was requested successfully, False if workflow not found or not running.
+        """
+        state = self.workflows.get(workflow_id)
+        if not state:
+            return False
+        
+        if state.status != WorkflowStatus.RUNNING:
+            return False
+        
+        state.pause_requested = True
+        print(f"[Engine] PAUSE REQUESTED for workflow {workflow_id} - will pause after current batch")
+        return True
+
+    def is_pause_requested(self, workflow_id: str) -> bool:
+        """Check if pause has been requested for a workflow."""
+        state = self.workflows.get(workflow_id)
+        return state.pause_requested if state else False
 
 
 # Singleton engine instance

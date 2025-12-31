@@ -26,6 +26,7 @@ interface WorkflowStore {
   workflowStatus: WorkflowStatusResponse | null;
   workflowResult: WorkflowResult | null;
   isExecuting: boolean;
+  isPaused: boolean;
   
   // Selected node for configuration
   selectedNodeId: string | null;
@@ -48,6 +49,8 @@ interface WorkflowStore {
   fetchFiles: () => Promise<void>;
   
   executeWorkflow: () => Promise<void>;
+  pauseWorkflow: () => Promise<void>;
+  resumeWorkflow: () => Promise<void>;
   pollWorkflowStatus: () => Promise<void>;
   fetchWorkflowResult: () => Promise<void>;
   resetExecution: () => void;
@@ -63,6 +66,7 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
   workflowStatus: null,
   workflowResult: null,
   isExecuting: false,
+  isPaused: false,
   selectedNodeId: null,
   files: [],
 
@@ -204,14 +208,17 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
         // Continue polling
         setTimeout(() => get().pollWorkflowStatus(), 1000);
       } else if (status.status === 'completed') {
-        set({ isExecuting: false });
+        set({ isExecuting: false, isPaused: false });
+        get().fetchWorkflowResult();
+      } else if (status.status === 'paused') {
+        set({ isExecuting: false, isPaused: true });
         get().fetchWorkflowResult();
       } else {
-        set({ isExecuting: false });
+        set({ isExecuting: false, isPaused: false });
       }
     } catch (error) {
       console.error('Failed to poll workflow status:', error);
-      set({ isExecuting: false });
+      set({ isExecuting: false, isPaused: false });
     }
   },
 
@@ -228,12 +235,53 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
     }
   },
 
+  pauseWorkflow: async () => {
+    const { workflowId } = get();
+    if (!workflowId) return;
+
+    try {
+      const response = await fetch(`${API_BASE}/workflows/${workflowId}/pause`, {
+        method: 'POST',
+      });
+      
+      if (response.ok) {
+        // Continue polling - status will change to 'paused'
+      } else {
+        console.error('Failed to pause workflow');
+      }
+    } catch (error) {
+      console.error('Failed to pause workflow:', error);
+    }
+  },
+
+  resumeWorkflow: async () => {
+    const { workflowId } = get();
+    if (!workflowId) return;
+
+    try {
+      const response = await fetch(`${API_BASE}/workflows/${workflowId}/resume`, {
+        method: 'POST',
+      });
+      
+      if (response.ok) {
+        set({ isExecuting: true, isPaused: false });
+        // Start polling again
+        get().pollWorkflowStatus();
+      } else {
+        console.error('Failed to resume workflow');
+      }
+    } catch (error) {
+      console.error('Failed to resume workflow:', error);
+    }
+  },
+
   resetExecution: () => {
     set({
       workflowId: null,
       workflowStatus: null,
       workflowResult: null,
       isExecuting: false,
+      isPaused: false,
     });
   },
 }));

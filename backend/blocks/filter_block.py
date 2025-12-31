@@ -1,4 +1,4 @@
-from typing import Any, Optional
+from typing import Any, Optional, Callable
 import pandas as pd
 
 from blocks.base import Block, BlockType
@@ -13,7 +13,9 @@ class FilterBlock(Block):
         self,
         df: Optional[pd.DataFrame],
         config: dict[str, Any],
-        on_progress: Optional[callable] = None,
+        on_progress: Optional[Callable[[int], None]] = None,
+        pause_check: Optional[Callable[[], bool]] = None,
+        start_row: int = 0,
     ) -> pd.DataFrame:
         """
         Filter DataFrame rows based on a condition.

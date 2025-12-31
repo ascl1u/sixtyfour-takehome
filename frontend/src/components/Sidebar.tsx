@@ -7,6 +7,7 @@ import {
   Mail,
   Save,
   Play,
+  Pause,
   RotateCcw,
   Loader2,
 } from 'lucide-react';
@@ -27,8 +28,11 @@ export default function Sidebar() {
     fetchBlockTypes,
     addNode,
     executeWorkflow,
+    pauseWorkflow,
+    resumeWorkflow,
     resetExecution,
     isExecuting,
+    isPaused,
     workflowStatus,
   } = useWorkflowStore();
 
@@ -105,6 +109,8 @@ export default function Sidebar() {
                 ? 'text-red-400'
                 : workflowStatus.status === 'running'
                 ? 'text-yellow-400'
+                : workflowStatus.status === 'paused'
+                ? 'text-orange-400'
                 : 'text-white/60'
             }`}
           >
@@ -113,6 +119,7 @@ export default function Sidebar() {
           {workflowStatus.result_row_count > 0 && (
             <div className="mt-1 text-xs text-white/50">
               {workflowStatus.result_row_count} rows processed
+              {workflowStatus.status === 'paused' && ' (partial)'}
             </div>
           )}
           {workflowStatus.error && (
@@ -125,24 +132,58 @@ export default function Sidebar() {
 
       {/* Actions */}
       <div className="border-t border-[#2a2a3a] p-4">
-        <button
-          onClick={executeWorkflow}
-          disabled={isExecuting}
-          className="flex w-full items-center justify-center gap-2 rounded-lg bg-block-purple px-4 py-2.5 font-medium text-white transition-all hover:bg-block-purple/90 disabled:opacity-50"
-        >
-          {isExecuting ? (
-            <>
-              <Loader2 size={18} className="animate-spin" />
-              Running...
-            </>
-          ) : (
-            <>
-              <Play size={18} />
-              Run Workflow
-            </>
-          )}
-        </button>
-        {workflowStatus && (
+        {/* Run / Resume button */}
+        {isPaused ? (
+          <button
+            onClick={resumeWorkflow}
+            disabled={isExecuting}
+            className="flex w-full items-center justify-center gap-2 rounded-lg bg-block-green px-4 py-2.5 font-medium text-white transition-all hover:bg-block-green/90 disabled:opacity-50"
+          >
+            {isExecuting ? (
+              <>
+                <Loader2 size={18} className="animate-spin" />
+                Resuming...
+              </>
+            ) : (
+              <>
+                <Play size={18} />
+                Resume Workflow
+              </>
+            )}
+          </button>
+        ) : (
+          <button
+            onClick={executeWorkflow}
+            disabled={isExecuting}
+            className="flex w-full items-center justify-center gap-2 rounded-lg bg-block-purple px-4 py-2.5 font-medium text-white transition-all hover:bg-block-purple/90 disabled:opacity-50"
+          >
+            {isExecuting ? (
+              <>
+                <Loader2 size={18} className="animate-spin" />
+                Running...
+              </>
+            ) : (
+              <>
+                <Play size={18} />
+                Run Workflow
+              </>
+            )}
+          </button>
+        )}
+
+        {/* Pause button - only show while running */}
+        {isExecuting && !isPaused && (
+          <button
+            onClick={pauseWorkflow}
+            className="mt-2 flex w-full items-center justify-center gap-2 rounded-lg bg-orange-500 px-4 py-2 font-medium text-white transition-all hover:bg-orange-600"
+          >
+            <Pause size={16} />
+            Pause Workflow
+          </button>
+        )}
+
+        {/* Reset button */}
+        {workflowStatus && !isExecuting && (
           <button
             onClick={resetExecution}
             className="mt-2 flex w-full items-center justify-center gap-2 rounded-lg border border-[#2a2a3a] px-4 py-2 text-sm text-white/70 transition-all hover:bg-white/5"

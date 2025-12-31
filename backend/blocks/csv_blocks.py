@@ -1,5 +1,5 @@
 import os
-from typing import Any, Optional
+from typing import Any, Optional, Callable
 import pandas as pd
 import aiofiles
 import asyncio
@@ -20,7 +20,9 @@ class ReadCSVBlock(Block):
         self,
         df: Optional[pd.DataFrame],
         config: dict[str, Any],
-        on_progress: Optional[callable] = None,
+        on_progress: Optional[Callable[[int], None]] = None,
+        pause_check: Optional[Callable[[], bool]] = None,
+        start_row: int = 0,
     ) -> pd.DataFrame:
         """
         Read a CSV file.
@@ -73,7 +75,9 @@ class SaveCSVBlock(Block):
         self,
         df: Optional[pd.DataFrame],
         config: dict[str, Any],
-        on_progress: Optional[callable] = None,
+        on_progress: Optional[Callable[[int], None]] = None,
+        pause_check: Optional[Callable[[], bool]] = None,
+        start_row: int = 0,
     ) -> pd.DataFrame:
         """
         Save DataFrame to a CSV file.

@@ -29,7 +29,7 @@ export interface BlockTypeInfo {
   }>;
 }
 
-export type BlockStatus = 'pending' | 'running' | 'completed' | 'failed' | 'skipped';
+export type BlockStatus = 'pending' | 'running' | 'paused' | 'completed' | 'failed' | 'skipped';
 
 export interface BlockProgress {
   block_id: string;
@@ -39,7 +39,7 @@ export interface BlockProgress {
   error?: string;
 }
 
-export type WorkflowStatus = 'pending' | 'running' | 'completed' | 'failed';
+export type WorkflowStatus = 'pending' | 'running' | 'paused' | 'completed' | 'failed';
 
 export interface WorkflowStatusResponse {
   workflow_id: string;
@@ -56,6 +56,7 @@ export interface WorkflowResult {
   columns: string[];
   row_count: number;
   data: Record<string, unknown>[];
+  is_partial?: boolean;
 }
 
 export interface FileInfo {

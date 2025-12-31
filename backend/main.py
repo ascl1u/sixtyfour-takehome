@@ -221,17 +221,22 @@ async def get_workflow_status(workflow_id: str):
 
 @app.get("/workflows/{workflow_id}/results")
 async def get_workflow_results(workflow_id: str):
-    """Get the results of a completed workflow."""
+    """
+    Get the results of a workflow.
+    
+    Works for both completed and paused workflows (partial results).
+    """
     engine = get_engine()
     state = engine.get_workflow_status(workflow_id)
 
     if not state:
         raise HTTPException(status_code=404, detail="Workflow not found")
 
-    if state.status != WorkflowStatus.COMPLETED:
+    # Allow getting results from completed or paused workflows
+    if state.status not in (WorkflowStatus.COMPLETED, WorkflowStatus.PAUSED):
         raise HTTPException(
             status_code=400,
-            detail=f"Workflow is {state.status.value}, not completed",
+            detail=f"Workflow is {state.status.value}, results not available yet",
         )
 
     df = engine.get_workflow_result(workflow_id)
@@ -245,6 +250,7 @@ async def get_workflow_results(workflow_id: str):
         "columns": list(df.columns),
         "row_count": len(df),
         "data": clean_df.to_dict(orient="records"),
+        "is_partial": state.status == WorkflowStatus.PAUSED,
     }
 
 
@@ -254,6 +260,60 @@ async def delete_workflow(workflow_id: str):
     engine = get_engine()
     engine.cleanup_workflow(workflow_id)
     return {"message": "Workflow deleted"}
+
+
+@app.post("/workflows/{workflow_id}/pause")
+async def pause_workflow(workflow_id: str):
+    """
+    Request to pause a running workflow.
+    
+    The workflow will pause after completing any in-flight API requests.
+    Use /workflows/{id}/status to check when it's paused.
+    Use /workflows/{id}/results to get partial results.
+    """
+    engine = get_engine()
+    success = engine.request_pause(workflow_id)
+    
+    if not success:
+        state = engine.get_workflow_status(workflow_id)
+        if not state:
+            raise HTTPException(status_code=404, detail="Workflow not found")
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot pause workflow in {state.status.value} state"
+        )
+    
+    return {"message": "Pause requested", "workflow_id": workflow_id}
+
+
+@app.post("/workflows/{workflow_id}/resume")
+async def resume_workflow(workflow_id: str):
+    """
+    Resume a paused workflow from where it stopped.
+    
+    The workflow will continue processing from the last completed row.
+    """
+    engine = get_engine()
+    state = engine.get_workflow_status(workflow_id)
+    
+    if not state:
+        raise HTTPException(status_code=404, detail="Workflow not found")
+    
+    if state.status != WorkflowStatus.PAUSED:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot resume workflow in {state.status.value} state"
+        )
+    
+    # Resume in background
+    asyncio.create_task(engine.resume_workflow(workflow_id))
+    
+    return {
+        "message": "Workflow resumed",
+        "workflow_id": workflow_id,
+        "resuming_from_block": state.current_block_index,
+        "resuming_from_row": state.last_processed_row,
+    }
 
 
 # File management endpoints

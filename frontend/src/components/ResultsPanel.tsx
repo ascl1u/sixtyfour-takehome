@@ -70,8 +70,12 @@ export default function ResultsPanel() {
       <div className="flex items-center justify-between border-b border-[#2a2a3a] px-4 py-2">
         <div className="flex items-center gap-3">
           <h3 className="font-semibold text-white">Results</h3>
-          <span className="rounded-full bg-block-green/20 px-2 py-0.5 text-xs text-block-green">
-            {workflowResult.row_count} rows
+          <span className={`rounded-full px-2 py-0.5 text-xs ${
+            workflowResult.is_partial 
+              ? 'bg-orange-500/20 text-orange-400' 
+              : 'bg-block-green/20 text-block-green'
+          }`}>
+            {workflowResult.row_count} rows{workflowResult.is_partial ? ' (partial)' : ''}
           </span>
         </div>
         <div className="flex items-center gap-2">

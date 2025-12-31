@@ -1,8 +1,8 @@
 import asyncio
-from typing import Any, Optional
+from typing import Any, Optional, Callable
 import pandas as pd
 
-from blocks.base import Block, BlockType
+from blocks.base import Block, BlockType, PauseException
 from sixtyfour_client import get_client, EnrichmentResult
 
 
@@ -15,7 +15,9 @@ class EnrichLeadBlock(Block):
         self,
         df: Optional[pd.DataFrame],
         config: dict[str, Any],
-        on_progress: Optional[callable] = None,
+        on_progress: Optional[Callable[[int], None]] = None,
+        pause_check: Optional[Callable[[], bool]] = None,
+        start_row: int = 0,
     ) -> pd.DataFrame:
         """
         Enrich leads in the DataFrame.
@@ -34,8 +36,6 @@ class EnrichLeadBlock(Block):
         client = get_client()
 
         # Convert struct from array format to dict format for API
-        # Frontend sends: [{"name": "education", "description": "..."}]
-        # API expects: {"education": "..."}
         struct_config = config.get("struct", [])
         struct: dict[str, str] = {}
         if isinstance(struct_config, list):
@@ -48,61 +48,81 @@ class EnrichLeadBlock(Block):
         name_col = config.get("name_column", "name")
         company_col = config.get("company_column", "company")
         linkedin_col = config.get("linkedin_column", "linkedin")
-        max_concurrent = config.get("max_concurrent", 10)
+        max_concurrent = config.get("max_concurrent", 1)
+        batch_size = config.get("batch_size", max_concurrent)
 
-        # Semaphore for rate limiting
-        semaphore = asyncio.Semaphore(max_concurrent)
-
-        total_rows = len(df)
-        completed = 0
-        results = []
-
-        async def enrich_row(idx: int, row: pd.Series) -> tuple[int, EnrichmentResult]:
-            nonlocal completed
-            async with semaphore:
-                lead_info = {}
-
-                if name_col in row and pd.notna(row[name_col]):
-                    lead_info["name"] = str(row[name_col])
-                if company_col in row and pd.notna(row[company_col]):
-                    lead_info["company"] = str(row[company_col])
-                if linkedin_col in row and pd.notna(row[linkedin_col]):
-                    lead_info["linkedin"] = str(row[linkedin_col])
-
-                # Add any additional context from the row
-                if "email" in row and pd.notna(row["email"]):
-                    lead_info["email"] = str(row["email"])
-                if "company_location" in row and pd.notna(row["company_location"]):
-                    lead_info["location"] = str(row["company_location"])
-
-                result = await client.enrich_lead(lead_info, struct if len(struct) > 0 else None)
-
-                completed += 1
-                if on_progress:
-                    progress = int((completed / total_rows) * 100)
-                    await on_progress(progress)
-
-                return idx, result
-
-        # Submit all enrichment tasks
-        tasks = [enrich_row(idx, row) for idx, row in df.iterrows()]
-        results = await asyncio.gather(*tasks)
-
-        # Create a copy of the DataFrame to add enrichment data
+        # Create result DataFrame
         result_df = df.copy()
+        
+        # Get rows to process (from start_row onwards)
+        rows_list = list(df.iterrows())
+        total_rows = len(rows_list)
+        
+        # Process rows in batches for pause support
+        current_row = start_row
+        print(f"[EnrichLead] Starting enrichment: {total_rows} rows, batch_size={batch_size}")
+        
+        while current_row < total_rows:
+            print(f"[EnrichLead] Processing batch starting at row {current_row}/{total_rows} - PAUSE AVAILABLE NOW")
+            
+            # Check for pause before starting a new batch
+            if pause_check and pause_check():
+                print(f"[EnrichLead] PAUSING at row {current_row}/{total_rows}")
+                raise PauseException(
+                    partial_df=result_df,
+                    last_processed_row=current_row,
+                    message=f"Paused at row {current_row}/{total_rows}"
+                )
+            
+            # Determine batch end
+            batch_end = min(current_row + batch_size, total_rows)
+            batch_rows = rows_list[current_row:batch_end]
+            
+            # Process batch concurrently
+            semaphore = asyncio.Semaphore(max_concurrent)
+            
+            async def enrich_row(idx: int, row: pd.Series) -> tuple[int, EnrichmentResult]:
+                async with semaphore:
+                    lead_info = {}
 
-        # Add enrichment results to DataFrame
-        for idx, enrichment_result in results:
-            if enrichment_result.success and enrichment_result.data:
-                data = enrichment_result.data
-                # Add each field from the enrichment result as a new column
-                for key, value in data.items():
-                    if key not in ["success", "error"]:
-                        col_name = f"enriched_{key}"
-                        if col_name not in result_df.columns:
-                            result_df[col_name] = None
-                        result_df.at[idx, col_name] = value
+                    if name_col in row and pd.notna(row[name_col]):
+                        lead_info["name"] = str(row[name_col])
+                    if company_col in row and pd.notna(row[company_col]):
+                        lead_info["company"] = str(row[company_col])
+                    if linkedin_col in row and pd.notna(row[linkedin_col]):
+                        lead_info["linkedin"] = str(row[linkedin_col])
 
+                    if "email" in row and pd.notna(row["email"]):
+                        lead_info["email"] = str(row["email"])
+                    if "company_location" in row and pd.notna(row["company_location"]):
+                        lead_info["location"] = str(row["company_location"])
+
+                    result = await client.enrich_lead(lead_info, struct if len(struct) > 0 else None)
+                    return idx, result
+
+            # Submit batch tasks
+            tasks = [enrich_row(idx, row) for idx, row in batch_rows]
+            results = await asyncio.gather(*tasks)
+
+            # Add batch results to DataFrame
+            for idx, enrichment_result in results:
+                if enrichment_result.success and enrichment_result.data:
+                    data = enrichment_result.data
+                    for key, value in data.items():
+                        if key not in ["success", "error"]:
+                            col_name = f"enriched_{key}"
+                            if col_name not in result_df.columns:
+                                result_df[col_name] = None
+                            result_df.at[idx, col_name] = value
+
+            # Update progress
+            current_row = batch_end
+            print(f"[EnrichLead] Completed batch: {current_row}/{total_rows} rows done ({int((current_row / total_rows) * 100)}%)")
+            if on_progress:
+                progress = int((current_row / total_rows) * 100)
+                await on_progress(progress)
+
+        print(f"[EnrichLead] COMPLETED: All {total_rows} rows enriched")
         return result_df
 
 
@@ -115,7 +135,9 @@ class FindEmailBlock(Block):
         self,
         df: Optional[pd.DataFrame],
         config: dict[str, Any],
-        on_progress: Optional[callable] = None,
+        on_progress: Optional[Callable[[int], None]] = None,
+        pause_check: Optional[Callable[[], bool]] = None,
+        start_row: int = 0,
     ) -> pd.DataFrame:
         """
         Find email addresses for leads in the DataFrame.
@@ -141,9 +163,7 @@ class FindEmailBlock(Block):
         output_col = config.get("output_column", "found_email")
         skip_existing = config.get("skip_existing", True)
         max_concurrent = config.get("max_concurrent", 10)
-
-        # Semaphore for rate limiting
-        semaphore = asyncio.Semaphore(max_concurrent)
+        batch_size = config.get("batch_size", max_concurrent)
 
         result_df = df.copy()
         if output_col not in result_df.columns:
@@ -163,41 +183,64 @@ class FindEmailBlock(Block):
             return result_df
 
         total_rows = len(rows_to_process)
-        completed = 0
+        print(f"[FindEmail] Starting email lookup: {total_rows} rows to process, batch_size={batch_size}")
+        
+        # Adjust start_row to be relative to rows_to_process
+        current_row = start_row
+        
+        while current_row < total_rows:
+            print(f"[FindEmail] Processing batch starting at row {current_row}/{total_rows} - PAUSE AVAILABLE NOW")
+            
+            # Check for pause before starting a new batch
+            if pause_check and pause_check():
+                print(f"[FindEmail] PAUSING at row {current_row}/{total_rows}")
+                raise PauseException(
+                    partial_df=result_df,
+                    last_processed_row=current_row,
+                    message=f"Paused at row {current_row}/{total_rows}"
+                )
+            
+            # Determine batch end
+            batch_end = min(current_row + batch_size, total_rows)
+            batch_rows = rows_to_process[current_row:batch_end]
+            
+            # Process batch concurrently
+            semaphore = asyncio.Semaphore(max_concurrent)
+            
+            async def find_email_for_row(
+                idx: int, row: pd.Series
+            ) -> tuple[int, EnrichmentResult]:
+                async with semaphore:
+                    lead = {}
 
-        async def find_email_for_row(
-            idx: int, row: pd.Series
-        ) -> tuple[int, EnrichmentResult]:
-            nonlocal completed
-            async with semaphore:
-                lead = {}
+                    if name_col in row and pd.notna(row[name_col]):
+                        lead["name"] = str(row[name_col])
+                    if company_col in row and pd.notna(row[company_col]):
+                        lead["company"] = str(row[company_col])
+                    if linkedin_col in row and pd.notna(row[linkedin_col]):
+                        lead["linkedin"] = str(row[linkedin_col])
 
-                if name_col in row and pd.notna(row[name_col]):
-                    lead["name"] = str(row[name_col])
-                if company_col in row and pd.notna(row[company_col]):
-                    lead["company"] = str(row[company_col])
-                if linkedin_col in row and pd.notna(row[linkedin_col]):
-                    lead["linkedin"] = str(row[linkedin_col])
+                    result = await client.find_email(lead, mode)
+                    return idx, result
 
-                result = await client.find_email(lead, mode)
+            # Submit batch tasks
+            tasks = [find_email_for_row(idx, row) for idx, row in batch_rows]
+            results = await asyncio.gather(*tasks)
 
-                completed += 1
-                if on_progress:
-                    progress = int((completed / total_rows) * 100)
-                    await on_progress(progress)
+            # Add results to DataFrame
+            for idx, email_result in results:
+                if email_result.success and email_result.data:
+                    email = email_result.data.get("email", email_result.data.get("found_email"))
+                    if email:
+                        result_df.at[idx, output_col] = email
 
-                return idx, result
+            # Update progress
+            current_row = batch_end
+            print(f"[FindEmail] Completed batch: {current_row}/{total_rows} rows done ({int((current_row / total_rows) * 100)}%)")
+            if on_progress:
+                progress = int((current_row / total_rows) * 100)
+                await on_progress(progress)
 
-        # Submit all email lookup tasks
-        tasks = [find_email_for_row(idx, row) for idx, row in rows_to_process]
-        results = await asyncio.gather(*tasks)
-
-        # Add results to DataFrame
-        for idx, email_result in results:
-            if email_result.success and email_result.data:
-                email = email_result.data.get("email", email_result.data.get("found_email"))
-                if email:
-                    result_df.at[idx, output_col] = email
-
+        print(f"[FindEmail] COMPLETED: All {total_rows} emails found")
         return result_df
 
